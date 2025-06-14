@@ -7,81 +7,120 @@ import time
 
 def simplify_cvpr_scrape(url="https://openaccess.thecvf.com/CVPR2024?day=all"):
     """
-    Scrapes paper titles, authors, abstract snippets, PDF links, and supplementary
-    material links directly from the main CVPR 2024 page.
+    Scrapes paper titles, authors, PDF links, and supplementary material links 
+    from the CVPR 2024 website based on the actual HTML structure.
     """
     print(f"Fetching data from: {url}")
     try:
         response = requests.get(url, timeout=15)
-        response.raise_for_status() # Raise an exception for bad status codes
+        response.raise_for_status()
     except requests.exceptions.RequestException as e:
         print(f"Error fetching the URL: {e}")
         return []
 
     soup = BeautifulSoup(response.text, 'html.parser')
     papers_data = []
-
-    # The CVF Open Access typically lists papers within <dl class="paper-details"> blocks.
-    # Each <dl> contains <dt> (title) and <dd> (authors, abstract-snippet, links).
-    paper_dl_entries = soup.find_all('dl', class_='paper-details')
-
-    if not paper_dl_entries:
-        print("Could not find any <dl class='paper-details'> entries. The website structure might have changed.")
-        return []
-
-    print(f"Found {len(paper_dl_entries)} paper entries.")
-
-    for i, dl_entry in enumerate(paper_dl_entries):
-        paper_info = {}
-
-        # 1. Title and URL to Paper Page
-        title_dt = dl_entry.find('dt', class_='paper-title')
-        if title_dt:
-            title_link = title_dt.find('a', href=True)
-            paper_info['Title'] = title_link.get_text(strip=True) if title_link else title_dt.get_text(strip=True)
-            paper_info['Paper Page URL'] = requests.compat.urljoin(url, title_link['href']) if title_link else None
-        else:
-            paper_info['Title'] = None
-            paper_info['Paper Page URL'] = None
-
-        # 2. Authors (usually in the dd immediately following the dt, or first dd)
-        authors_dd = dl_entry.find('dd', class_='authors')
-        if authors_dd:
-            paper_info['Authors'] = authors_dd.get_text(strip=True)
-        else:
-            # Fallback: sometimes authors are in a general <dd> tag
-            potential_authors_dd = dl_entry.find('dd')
-            if potential_authors_dd and ';' in potential_authors_dd.get_text(): # Simple heuristic
-                paper_info['Authors'] = potential_authors_dd.get_text(strip=True)
-            else:
-                paper_info['Authors'] = None
-
-        # 3. Abstract Snippet (usually in a dd with class 'abstract-snippet' or similar)
-        abstract_dd = dl_entry.find('dd', class_=re.compile(r'abstract|abstract-snippet'))
-        if abstract_dd:
-            paper_info['Abstract'] = abstract_dd.get_text(strip=True)
-        else:
-            paper_info['Abstract'] = None
-
-        # 4. Links (PDF and Supplementary Material)
-        # These are usually within a <dd class="links"> or just direct <a> tags within the <dl>
+    
+    # Get all text content and split into lines
+    all_text = soup.get_text()
+    lines = all_text.split('\n')
+    
+    print(f"Processing {len(lines)} lines of text...")
+    
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
         
-        pdf_link_tag = dl_entry.find('a', href=re.compile(r'\.pdf$', re.IGNORECASE))
-        paper_info['PDF Link'] = requests.compat.urljoin(url, pdf_link_tag['href']) if pdf_link_tag else None
-
-        # Find supplementary material link (common archive/video extensions, not a PDF)
-        supp_link_tag = dl_entry.find('a', href=re.compile(r'\.(zip|gz|tgz|rar|mp4|mov|avi|gif)$', re.IGNORECASE))
-        if supp_link_tag and '.pdf' not in supp_link_tag['href'].lower(): # Ensure it's not the PDF
-            paper_info['Supplementary Material Link'] = requests.compat.urljoin(url, supp_link_tag['href'])
-        else:
-            paper_info['Supplementary Material Link'] = None
+        # Skip empty lines and navigation elements
+        if not line or line in ['Back', 'Papers', 'CVPR 2024 CVF', 'CVPR 2024 open access']:
+            i += 1
+            continue
             
-        papers_data.append(paper_info)
-
-        # Optional: Print progress for long lists
-        if (i + 1) % 100 == 0:
-            print(f"  Processed {i + 1} papers...")
-
+        # Look for paper titles (they are typically longer lines without special characters at the start)
+        if (len(line) > 20 and 
+            not line.startswith('@') and 
+            not line.startswith('[') and 
+            not line.startswith('Powered by:') and
+            not line.startswith('Sponsored by:') and
+            not line.startswith('These CVPR') and
+            not line.startswith('Except for') and
+            not line.startswith('This material') and
+            not line.startswith('Copyright') and
+            not line.startswith('All persons') and
+            not line.startswith('Microsoft') and
+            not line.startswith('Amazon') and
+            not line.startswith('Facebook') and
+            not line.startswith('Google')):
+            
+            paper_info = {'Title': line}
+            
+            # Look for authors in the next few lines
+            authors = []
+            j = i + 1
+            while j < len(lines) and j < i + 10:  # Look up to 10 lines ahead
+                next_line = lines[j].strip()
+                
+                # If we hit another potential title or special content, stop
+                if (len(next_line) > 20 and 
+                    not next_line.startswith('@') and 
+                    not next_line.startswith('[') and
+                    not next_line.startswith('Powered by:') and
+                    not next_line.startswith('Sponsored by:')):
+                    break
+                    
+                # If we hit a line with commas, it's likely authors
+                if ',' in next_line and len(next_line) > 5:
+                    authors.append(next_line)
+                elif next_line and not next_line.startswith('[') and not next_line.startswith('@'):
+                    # Single author or continuation
+                    authors.append(next_line)
+                    
+                j += 1
+            
+            if authors:
+                paper_info['Authors'] = '; '.join(authors)
+            
+            # Look for links in the surrounding area
+            # Find the bibtex entry for this paper
+            bibtex_start = None
+            for k in range(i, min(i + 50, len(lines))):
+                if lines[k].strip().startswith('@InProceedings'):
+                    bibtex_start = k
+                    break
+            
+            if bibtex_start:
+                # Extract links from the area around the bibtex
+                for k in range(max(0, bibtex_start - 10), min(len(lines), bibtex_start + 10)):
+                    line_k = lines[k].strip()
+                    
+                    # Look for [pdf], [supp], [arXiv] links
+                    if '[pdf]' in line_k.lower():
+                        # Find the actual PDF link in the HTML
+                        pdf_link = soup.find('a', href=re.compile(r'\.pdf$', re.IGNORECASE))
+                        if pdf_link:
+                            paper_info['PDF Link'] = requests.compat.urljoin(url, pdf_link['href'])
+                    
+                    if '[supp]' in line_k.lower():
+                        # Find supplementary material link
+                        supp_links = soup.find_all('a', href=re.compile(r'\.(zip|gz|tgz|rar|mp4|mov|avi|gif)$', re.IGNORECASE))
+                        if supp_links:
+                            paper_info['Supplementary Material Link'] = requests.compat.urljoin(url, supp_links[0]['href'])
+                    
+                    if '[arxiv]' in line_k.lower():
+                        # Find arXiv link
+                        arxiv_link = soup.find('a', href=re.compile(r'arxiv\.org', re.IGNORECASE))
+                        if arxiv_link:
+                            paper_info['arXiv Link'] = arxiv_link['href']
+            
+            papers_data.append(paper_info)
+            print(f"Found paper: {line[:50]}...")
+            
+            # Move to after the authors section
+            i = j
+        else:
+            i += 1
+    
+    print(f"Found {len(papers_data)} paper entries.")
     return papers_data
 
 if __name__ == "__main__":
@@ -103,6 +142,6 @@ if __name__ == "__main__":
         print(f"Data successfully saved to {json_filename}")
 
         print("\nHere's a preview of the first 5 entries:")
-        print(df.head().to_string()) # to_string() helps display full content in console
+        print(df.head().to_string())
     else:
         print("\nNo data was extracted. Please check the URL and the website's current HTML structure.")
