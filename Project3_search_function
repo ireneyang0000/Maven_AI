@@ -1,0 +1,43 @@
+/**
+ * Simple function to extract search query and create alternative search URLs
+ */
+
+function getAlternativeSearchUrls() {
+    // Get current URL
+    const currentUrl = window.location.href;
+    
+    // Extract search query from current URL
+    let query = null;
+    
+    try {
+        const url = new URL(currentUrl);
+        const params = new URLSearchParams(url.search);
+        
+        // Check different search engines and their query parameters
+        if (url.hostname.includes('duckduckgo.com') && url.pathname.includes('/search')) {
+            query = params.get('q');
+        } 
+    } catch (error) {
+        console.error('Error parsing URL:', error);
+        return [];
+    }
+    
+    // If no query found, return empty array
+    if (!query) {
+        return [];
+    }
+    
+    // Define alternative search engines
+    const searchEngines = [
+        {
+            name: 'duckgo',
+            url: `https://duckduckgo.com/?q=${encodeURIComponent(query)}`
+        },
+    ];
+    
+    return searchEngines;
+}
+
+// Example usage:
+// const alternatives = getAlternativeSearchUrls();
+// console.log('Alternative search URLs:', alternatives);
